@@ -10,12 +10,12 @@ const app = express();
 app.use(express.json());
 
 /**
- * TOKEN FILE MEMORY
+ * MEMORY TOKEN
  */
 let savedToken = null;
 
 /**
- * GENERATE RANDOM DEVICE ID
+ * RANDOM DEVICE ID
  */
 function getDeviceID() {
 
@@ -70,11 +70,11 @@ function generateAndroidFcmToken() {
 }
 
 /**
- * GET AUTH TOKEN
+ * GET TOKEN
  */
-async function getValidToken() {
+async function getValidToken(forceNew = false) {
 
-  if (savedToken) {
+  if (savedToken && !forceNew) {
     return savedToken;
   }
 
@@ -96,8 +96,11 @@ async function getValidToken() {
     authPayload,
     {
       headers: {
-        "user-agent": "Dart/3.9 (dart:io)",
-        "content-type": "application/json"
+        "user-agent":
+          "Dart/3.9 (dart:io)",
+
+        "content-type":
+          "application/json"
       }
     }
   );
@@ -134,15 +137,18 @@ app.post("/generate", async (req, res) => {
       req.body.ratio ||
       "16:9";
 
-    const authToken =
+    let authToken =
       await getValidToken();
 
     /**
-     * CREATE FORM
+     * FORM
      */
     const form = new FormData();
 
-    form.append("prompt", prompt);
+    form.append(
+      "prompt",
+      prompt
+    );
 
     form.append(
       "model",
@@ -172,26 +178,64 @@ app.post("/generate", async (req, res) => {
     /**
      * GENERATE
      */
-    const genRes = await axios.post(
-      "https://api.geminigen.ai/mobile/v3/video-gen",
-      form,
-      {
-        headers: {
-          ...form.getHeaders(),
-          authorization: authToken,
-          "user-agent":
-            "Dart/3.9 (dart:io)"
+    let genRes;
+
+    try {
+
+      genRes = await axios.post(
+        "https://api.geminigen.ai/mobile/v3/video-gen",
+        form,
+        {
+          headers: {
+            ...form.getHeaders(),
+
+            authorization:
+              authToken,
+
+            "user-agent":
+              "Dart/3.9 (dart:io)"
+          }
         }
+      );
+
+    } catch (e) {
+
+      /**
+       * TOKEN EXPIRED
+       */
+      if (
+        e.response?.status === 403 &&
+        e.response?.data?.detail?.error_code ===
+          "TOKEN_EXPIRED"
+      ) {
+
+        console.log(
+          "TOKEN EXPIRED -> REFRESHING"
+        );
+
+        authToken =
+          await getValidToken(true);
+
+        genRes = await axios.post(
+          "https://api.geminigen.ai/mobile/v3/video-gen",
+          form,
+          {
+            headers: {
+              ...form.getHeaders(),
+
+              authorization:
+                authToken,
+
+              "user-agent":
+                "Dart/3.9 (dart:io)"
+            }
+          }
+        );
+
+      } else {
+
+        throw e;
       }
-    );
-
-    if (!genRes.data?.uuid) {
-
-      return res.status(500).json({
-        error:
-          "No task UUID returned",
-        raw: genRes.data
-      });
     }
 
     /**
@@ -199,60 +243,114 @@ app.post("/generate", async (req, res) => {
      */
     return res.json({
       success: true,
-      task_id: genRes.data.uuid,
+
+      task_id:
+        genRes.data.uuid,
+
       task_url:
         `${req.protocol}://${req.get("host")}/status/${genRes.data.uuid}`
     });
 
   } catch (err) {
 
-    console.error("GENERATE ERROR");
+    console.error(
+      "GENERATE ERROR"
+    );
 
     if (err.response) {
 
-      console.error(err.response.status);
+      console.error(
+        err.response.status
+      );
 
-      console.error(err.response.data);
+      console.error(
+        err.response.data
+      );
 
       return res.status(500).json({
-        status: err.response.status,
-        data: err.response.data
+        status:
+          err.response.status,
+
+        data:
+          err.response.data
       });
     }
 
     console.error(err.message);
 
     return res.status(500).json({
-      error: err.message
+      error:
+        err.message
     });
   }
 
 });
 
 /**
- * CHECK STATUS
+ * STATUS CHECK
  */
 app.get("/status/:uuid", async (req, res) => {
 
   try {
 
-    const authToken =
+    let authToken =
       await getValidToken();
 
-    const response = await axios.get(
-      `https://api.geminigen.ai/mobile/v1/history/${req.params.uuid}`,
-      {
-        headers: {
-          authorization: authToken,
-          "user-agent":
-            "Dart/3.9 (dart:io)"
+    let response;
+
+    try {
+
+      response = await axios.get(
+        `https://api.geminigen.ai/mobile/v1/history/${req.params.uuid}`,
+        {
+          headers: {
+            authorization:
+              authToken,
+
+            "user-agent":
+              "Dart/3.9 (dart:io)"
+          }
         }
+      );
+
+    } catch (e) {
+
+      /**
+       * TOKEN EXPIRED
+       */
+      if (
+        e.response?.status === 403 &&
+        e.response?.data?.detail?.error_code ===
+          "TOKEN_EXPIRED"
+      ) {
+
+        authToken =
+          await getValidToken(true);
+
+        response = await axios.get(
+          `https://api.geminigen.ai/mobile/v1/history/${req.params.uuid}`,
+          {
+            headers: {
+              authorization:
+                authToken,
+
+              "user-agent":
+                "Dart/3.9 (dart:io)"
+            }
+          }
+        );
+
+      } else {
+
+        throw e;
       }
-    );
+    }
 
-    const data = response.data;
+    const data =
+      response.data;
 
-    let status = "started";
+    let status =
+      "started";
 
     if (data.status === 2) {
       status = "done";
@@ -275,24 +373,34 @@ app.get("/status/:uuid", async (req, res) => {
 
   } catch (err) {
 
-    console.error("STATUS ERROR");
+    console.error(
+      "STATUS ERROR"
+    );
 
     if (err.response) {
 
-      console.error(err.response.status);
+      console.error(
+        err.response.status
+      );
 
-      console.error(err.response.data);
+      console.error(
+        err.response.data
+      );
 
       return res.status(500).json({
-        status: err.response.status,
-        data: err.response.data
+        status:
+          err.response.status,
+
+        data:
+          err.response.data
       });
     }
 
     console.error(err.message);
 
     return res.status(500).json({
-      error: err.message
+      error:
+        err.message
     });
   }
 
