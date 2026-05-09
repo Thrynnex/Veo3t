@@ -10,51 +10,102 @@ const app = express();
 app.use(express.json());
 
 /**
- * AES TOKEN ENCRYPTION
+ * TOKEN FILE MEMORY
  */
-function pad(num) {
-  return num.toString().padStart(2, "0");
+let savedToken = null;
+
+/**
+ * GENERATE RANDOM DEVICE ID
+ */
+function getDeviceID() {
+
+  const chars = "0123456789abcdef";
+
+  let uuid = "";
+
+  for (let i = 0; i < 16; i++) {
+
+    uuid += chars[
+      Math.floor(Math.random() * chars.length)
+    ];
+  }
+
+  return uuid;
 }
 
-function encodeToken(token) {
+/**
+ * RANDOM STRING
+ */
+const CHARS =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
 
-  const now = new Date();
+function randomString(length) {
 
-  const prefix =
-    `${pad(now.getUTCHours())}` +
-    `${pad(now.getUTCMinutes())}` +
-    `${pad(now.getUTCSeconds())}`;
+  const bytes = crypto.randomBytes(length);
 
-  const suffix =
-    `${pad(now.getUTCDate())}` +
-    `${pad(now.getUTCMonth() + 1)}` +
-    `${now.getUTCFullYear()}`;
+  let result = "";
 
-  const raw =
-    `${prefix}${token}${suffix}`;
+  for (let i = 0; i < length; i++) {
 
-  const key = Buffer.from(
-    "mmCPAtseIyZe9pTLKlhhbiyn93SulBsv",
-    "utf8"
+    result += CHARS[
+      bytes[i] % CHARS.length
+    ];
+  }
+
+  return result;
+}
+
+/**
+ * FCM TOKEN
+ */
+function generateAndroidFcmToken() {
+
+  const left =
+    randomString(22);
+
+  const right =
+    "APA91b" + randomString(134);
+
+  return `${left}:${right}`;
+}
+
+/**
+ * GET AUTH TOKEN
+ */
+async function getValidToken() {
+
+  if (savedToken) {
+    return savedToken;
+  }
+
+  const authPayload = {
+
+    mobile_device_uuid:
+      getDeviceID(),
+
+    platform: "GenV-APP",
+
+    device_token:
+      generateAndroidFcmToken(),
+
+    device_type: "android"
+  };
+
+  const authRes = await axios.post(
+    "https://api.geminigen.ai/api/mobile/uuid/activate-account",
+    authPayload,
+    {
+      headers: {
+        "user-agent": "Dart/3.9 (dart:io)",
+        "content-type": "application/json"
+      }
+    }
   );
 
-  const iv = Buffer.from(
-    "sPd_yX1U34O7X8OJ",
-    "utf8"
-  );
+  savedToken =
+    `Bearer ${authRes.data.access_token}`;
 
-  const cipher = crypto.createCipheriv(
-    "aes-256-cbc",
-    key,
-    iv
-  );
-
-  let encrypted =
-    cipher.update(raw, "utf8", "base64");
-
-  encrypted += cipher.final("base64");
-
-  return encrypted;
+  return savedToken;
 }
 
 /**
@@ -76,38 +127,15 @@ app.post("/generate", async (req, res) => {
   try {
 
     const prompt =
-      req.body.prompt || "a dog and a guy";
+      req.body.prompt ||
+      "a dog and a guy";
 
     const ratio =
-      req.body.ratio || "9:16";
+      req.body.ratio ||
+      "16:9";
 
-    /**
-     * AUTH
-     */
-    const authRes = await axios.post(
-      "https://api.geminigen.ai/api/mobile/uuid/activate-account",
-      {
-        mobile_device_uuid: "1234567890abcdef",
-        platform: "GenV-APP",
-        device_token: "test",
-        device_type: "android"
-      },
-      {
-        headers: {
-          "content-type": "application/json",
-          "user-agent": "Dart/3.8 (dart:io)"
-        }
-      }
-    );
-
-    const accessToken =
-      authRes.data.access_token;
-
-    /**
-     * ENCRYPT TOKEN
-     */
-    const encryptedToken =
-      encodeToken(accessToken);
+    const authToken =
+      await getValidToken();
 
     /**
      * CREATE FORM
@@ -115,87 +143,109 @@ app.post("/generate", async (req, res) => {
     const form = new FormData();
 
     form.append("prompt", prompt);
-    form.append("model", "veo-3");
-    form.append("duration", "8");
-    form.append("resolution", "720p");
-    form.append("aspect_ratio", ratio);
+
+    form.append(
+      "model",
+      "veo-3.1-lite"
+    );
+
+    form.append(
+      "duration",
+      "8"
+    );
+
+    form.append(
+      "resolution",
+      "720p"
+    );
+
+    form.append(
+      "aspect_ratio",
+      ratio
+    );
+
+    form.append(
+      "service_mode",
+      "stable"
+    );
 
     /**
-     * GENERATE VIDEO
+     * GENERATE
      */
     const genRes = await axios.post(
-      "https://api.geminigen.ai/mobile/v2/video-gen",
+      "https://api.geminigen.ai/mobile/v3/video-gen",
       form,
       {
         headers: {
           ...form.getHeaders(),
-          authorization: `Bearer ${encryptedToken}`,
-          "user-agent": "Dart/3.8 (dart:io)"
+          authorization: authToken,
+          "user-agent":
+            "Dart/3.9 (dart:io)"
         }
       }
     );
 
-    return res.json({
-      success: true,
-      response: genRes.data
-    });
-
-  } catch (e) {
-
-    console.error("GEN ERROR");
-
-    if (e.response) {
-
-      console.error(e.response.status);
-      console.error(e.response.data);
+    if (!genRes.data?.uuid) {
 
       return res.status(500).json({
-        status: e.response.status,
-        data: e.response.data
+        error:
+          "No task UUID returned",
+        raw: genRes.data
       });
     }
 
-    console.error(e.message);
+    /**
+     * SUCCESS
+     */
+    return res.json({
+      success: true,
+      task_id: genRes.data.uuid,
+      task_url:
+        `${req.protocol}://${req.get("host")}/status/${genRes.data.uuid}`
+    });
+
+  } catch (err) {
+
+    console.error("GENERATE ERROR");
+
+    if (err.response) {
+
+      console.error(err.response.status);
+
+      console.error(err.response.data);
+
+      return res.status(500).json({
+        status: err.response.status,
+        data: err.response.data
+      });
+    }
+
+    console.error(err.message);
 
     return res.status(500).json({
-      error: e.message
+      error: err.message
     });
   }
 
 });
 
 /**
- * STATUS CHECK
+ * CHECK STATUS
  */
 app.get("/status/:uuid", async (req, res) => {
 
   try {
 
-    const authRes = await axios.post(
-      "https://api.geminigen.ai/api/mobile/uuid/activate-account",
-      {
-        mobile_device_uuid: "1234567890abcdef",
-        platform: "GenV-APP",
-        device_token: "test",
-        device_type: "android"
-      },
-      {
-        headers: {
-          "content-type": "application/json",
-          "user-agent": "Dart/3.8 (dart:io)"
-        }
-      }
-    );
-
-    const token =
-      authRes.data.access_token;
+    const authToken =
+      await getValidToken();
 
     const response = await axios.get(
       `https://api.geminigen.ai/mobile/v1/history/${req.params.uuid}`,
       {
         headers: {
-          authorization: `Bearer ${token}`,
-          "user-agent": "Dart/3.8 (dart:io)"
+          authorization: authToken,
+          "user-agent":
+            "Dart/3.9 (dart:io)"
         }
       }
     );
@@ -213,42 +263,48 @@ app.get("/status/:uuid", async (req, res) => {
     }
 
     const video =
-      data.generated_video?.[0]?.video_url || null;
+      data.generated_video?.[0]?.video_url ||
+      null;
 
     return res.json({
+      success: true,
       status,
       video_url: video,
       raw: data
     });
 
-  } catch (e) {
+  } catch (err) {
 
     console.error("STATUS ERROR");
 
-    if (e.response) {
+    if (err.response) {
 
-      console.error(e.response.status);
-      console.error(e.response.data);
+      console.error(err.response.status);
+
+      console.error(err.response.data);
 
       return res.status(500).json({
-        status: e.response.status,
-        data: e.response.data
+        status: err.response.status,
+        data: err.response.data
       });
     }
 
-    console.error(e.message);
+    console.error(err.message);
 
     return res.status(500).json({
-      error: e.message
+      error: err.message
     });
   }
 
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT =
+  process.env.PORT || 3000;
 
 app.listen(PORT, () => {
 
-  console.log(`RUNNING ON ${PORT}`);
+  console.log(
+    `RUNNING ON ${PORT}`
+  );
 
 });
