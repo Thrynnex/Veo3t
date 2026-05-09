@@ -1,7 +1,6 @@
 {
   "name": "veo3-api",
   "version": "1.0.0",
-  "description": "Veo3 Render API",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
